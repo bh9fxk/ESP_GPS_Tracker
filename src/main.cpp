@@ -502,7 +502,7 @@ void setup() {
   Serial.println("Start AP...");
 
   WiFi.setHostname("aprs-tracker");
-  WiFi.softAP("aprs-tracker", "wsmymmd!");
+  WiFi.softAP("aprs-tracker", "88888888");
   
   Serial.print("AP IP address: ");
   Serial.println(WiFi.softAPIP());
