@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="stylesheet" type="text/css" href="style.css">
+</head>
+<body>
+<form method="POST" action="/savetraccar">
+<table>
+
+<tr><td><br />Traccar Device ID<br />
+<input type="text" name="DEVICENUM" maxlength="32" value="###DEVICENUM###"></td></tr>
+
+<tr><td><br />Traccar Server Domain<br />No http(s)://<br />
+<input type="text" name="TRACCARHOST" maxlength="255" value="###TRACCARHOST###"></td></tr>
+
+<tr><td><br />Traccar Server Port<br />Default Port 5055<br />
+<input type="text" name="TRACCARPORT" maxlength="8" value="###TRACCARPORT###"></td></tr>
+
+<tr><td></td></tr>
+
+</table>
+<br />
+<table>
+<tr><td class="even"><input type="submit" value="save"></td>
+<td class="even"><a class="fakebutton" href="./">cancel</a></td></tr>
+</table>
+</form>
+</body>
+</html>
+
