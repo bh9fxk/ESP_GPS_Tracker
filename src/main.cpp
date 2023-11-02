@@ -61,7 +61,7 @@ char ssid1[32], pass1[32], ssid2[32], pass2[32];
 
 // APRS configuration
 // char mycall[] = "BH9FXK-5";                // Radioamateur callsign
-// char aprspass[] = "20647";                 // APRS-IS aprspass for callsign
+// char aprspass[] = "20XXXX";                 // APRS-IS aprspass for callsign
 // char comment[] = "ESP APRS Tracker & Traccar.";    // Comment string added to position
 // char custominfo[] = "不负韶华 为梦想奋斗";
 // char aprshost[] = "asia.aprs2.net";        // APRS-IS host
