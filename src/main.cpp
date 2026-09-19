@@ -3,6 +3,9 @@
   v0.3  2023-10-2   增加 Traccar 上传功能
   v0.4  2023-10-10  修改 Traccar 上传方式与 APRS 相同
   v0.5  2023-10-14  增加 Web Configuration 功能
+  v0.6  2026-09-19  Traccar 改为选配；positionReport 缓冲扩至 160B；
+                    无 APRS 参数时加延时避免空转；GPS 失败改为重启；
+                    配置读取前清空残留，避免空字段携带旧值
 */
 
 #include <Arduino.h>
@@ -49,7 +52,7 @@
 
 /* ------------------------------------------------------------------------------- */
 #define TOCALL "APEST1"
-char ver[] = "v0.5";
+char ver[] = "v0.6";
 
 // Use Serial port on IO12/IO13 for GPS
 //static const int RXPin = PIN_D6, TXPin = PIN_D7;
@@ -93,7 +96,7 @@ char turn_time_str[8], turn_min_str[8], turn_slope_str[8];
 int low_speed, high_speed, turn_min, turn_slope; 
 long unsigned int low_rate, high_rate, turn_time;
 
-// Traccar configuration
+// Traccar configuration (可选：TRACCARHOST 留空则不启用 Traccar 上报，仅使用 APRS-IS)
 char DEVICENUM[32], TRACCARHOST[255], TRACCARPORT[8];
 double CurrentLati, CurrentLogi;
 String FINALLATI, FINALLOGI, FINALSPEED, FINALALTI, FINALCOURSE = "0";
@@ -117,7 +120,7 @@ File file;
 //   !lati.xxN/long.xxEvCRS/SPD/comment
 // -------------------------------------------------------------------------------
 char* positionReportWithAltitude() {
-  static char report [64];
+  static char report [160];
   memset (report, '\0' , sizeof(report));
   String symbolStr = String(symbol_str);
 
@@ -137,6 +140,20 @@ char* positionReportWithAltitude() {
 // Function to read APRS configuration from file.
 static void readCfgAPRS()
 {
+  // 清空残留，避免空字段携带上一轮/旧文件残留值
+  memset(mycall, 0, sizeof(mycall));
+  memset(aprspass, 0, sizeof(aprspass));
+  memset(comment, 0, sizeof(comment));
+  memset(custominfo, 0, sizeof(custominfo));
+  memset(aprshost, 0, sizeof(aprshost));
+  memset(symbol_str, 0, sizeof(symbol_str));
+  memset(low_speed_str, 0, sizeof(low_speed_str));
+  memset(low_rate_str, 0, sizeof(low_rate_str));
+  memset(high_speed_str, 0, sizeof(high_speed_str));
+  memset(high_rate_str, 0, sizeof(high_rate_str));
+  memset(turn_min_str, 0, sizeof(turn_min_str));
+  memset(turn_slope_str, 0, sizeof(turn_slope_str));
+  memset(turn_time_str, 0, sizeof(turn_time_str));
   if (LittleFS.exists("/aprs.txt")) {
     file = LittleFS.open("/aprs.txt", "r");
     file.readBytesUntil('\n', mycall, 10);
@@ -219,6 +236,9 @@ static void readCfgAPRS()
 // Function to read TRACCAR configuration from file.
 static void readCfgTRACCAR()
 {
+  memset(DEVICENUM, 0, sizeof(DEVICENUM));
+  memset(TRACCARHOST, 0, sizeof(TRACCARHOST));
+  memset(TRACCARPORT, 0, sizeof(TRACCARPORT));
   if (LittleFS.exists("/traccar.txt")) {
     file = LittleFS.open("/traccar.txt", "r");
     file.readBytesUntil('\n', DEVICENUM, 32);
@@ -243,6 +263,10 @@ static void readCfgTRACCAR()
 // Function to read WiFi configuration from file.
 static void readCfgWiFi()
 {
+  memset(ssid1, 0, sizeof(ssid1));
+  memset(pass1, 0, sizeof(pass1));
+  memset(ssid2, 0, sizeof(ssid2));
+  memset(pass2, 0, sizeof(pass2));
   if (LittleFS.exists("/wifis.txt")) {
     file = LittleFS.open("/wifis.txt", "r");
     file.readBytesUntil('\n', ssid1, 32);
@@ -640,11 +664,12 @@ void loop() {
     Serial.println(F("4 Wifi is OK."));
     digitalWrite(PIN_D4, HIGH);      // led off 当无线网络已连接
     smartDelay(1000);                // initial feeding of the GPS to make sure we have data
-    // 如果参数文件中无数据，等待页面输入，停止后续代码执行
-    Serial.println(F("5 判断是否有 APRS 或 Traccar 参数."));
-    if (strlen(aprshost) == 0  || strlen(TRACCARHOST) == 0)
+    // APRS 为必配；Traccar 为选配（TRACCARHOST 为空时仅使用 APRS-IS）
+    Serial.println(F("5 判断是否有 APRS 参数."));
+    if (strlen(aprshost) == 0)
     {
-      Serial.println(F("参数长度为0."));
+      Serial.println(F("APRS 参数未配置，等待 Web 配置."));
+      delay(1000);
       return;
     }
     
@@ -658,8 +683,8 @@ void loop() {
       Serial.println(satellitenumber);
 
       /* ------------------------------------------------------------------------------- */      
-      // Traccar上传失败，再次上传
-      if (post_now) {
+      // Traccar上传失败，再次上传（仅当配置了 Traccar）
+      if (post_now && strlen(TRACCARHOST) > 0) {
         Serial.println("R: TRACCAR 上传失败，再次上传");   
         traccarPOST();    // POST to Traccar Server
       }
@@ -743,14 +768,17 @@ void loop() {
           }
           send_now = false;
 
-          traccarPOST();    // Traccar 上传
+          // Traccar 上传（选配：未配置 Traccar 时跳过）
+          if (strlen(TRACCARHOST) > 0) {
+            traccarPOST();
+          }
         }
       }
     }
 
     if (millis() > 5000 && gps.charsProcessed() < 10) {
-      Serial.println(F("ERROR: No GPS detected: check wiring."));
-      while (true);
+      Serial.println(F("ERROR: No GPS detected: check wiring. Restarting..."));
+      ESP.restart();    // 明确重启，避免不可控看门狗复位
     }
     delay(1000);
   } else {
