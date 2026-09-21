@@ -6,6 +6,9 @@
   v0.6  2026-09-19  Traccar 改为选配；positionReport 缓冲扩至 160B；
                     无 APRS 参数时加延时避免空转；GPS 失败改为重启；
                     配置读取前清空残留，避免空字段携带旧值
+  v0.7  2026-09-21  固件更新改为串口上传：移除 ArduinoOTA（原无密码，存在
+                    任意固件刷入风险）；移除无引用的 /dl 下载接口（原可用
+                    arg(0) 读取任意 LittleFS 文件含明文凭据）
 */
 
 #include <Arduino.h>
@@ -23,9 +26,11 @@
 // Filesystem
 #include <LittleFS.h>
 
-// OTA
-#include <WiFiUdp.h>
-#include <ArduinoOTA.h>
+/* 固件升级说明：
+ * 自 v0.7 起移除 ArduinoOTA，固件一律通过 USB 串口本地烧录
+ * （platformio.ini: upload_protocol = esptool）。
+ * 不再开放任何网络侧的固件写入通道。
+ */
 
 /* ------------------------------------------------------------------------------- */
 /* These are the pins for all ESP8266 boards */
@@ -52,7 +57,7 @@
 
 /* ------------------------------------------------------------------------------- */
 #define TOCALL "APEST1"
-char ver[] = "v0.6";
+char ver[] = "v0.7";
 
 // Use Serial port on IO12/IO13 for GPS
 //static const int RXPin = PIN_D6, TXPin = PIN_D7;
@@ -469,26 +474,11 @@ void httpBoot() {
   ESP.restart();
 }
 
-void httpDownload() {
-  String str = "";
-  file = LittleFS.open(server.arg(0), "r");
-  if (!file) {
-    Serial.println("Can't open LittleFS file !\r\n");
-  }
-  else {
-    char buf[1024];
-    int siz = file.size();
-    while (siz > 0) {
-      size_t len = std::min((int)(sizeof(buf) - 1), siz);
-      file.read((uint8_t *)buf, len);
-      buf[len] = 0;
-      str += buf;
-      siz -= sizeof(buf) - 1;
-    }
-    file.close();
-    server.send(200, "text/plain", str);
-  }
-}
+/* /dl 下载接口已于 v0.7 移除：
+ * 原实现 LittleFS.open(server.arg(0)) 未做任何路径校验，攻击者可构造
+ * GET /dl?/wifis.txt 或 /aprs.txt 直接下载明文 WiFi 密码与 APRS passcode，
+ * 且该接口在所有前端页面中均无引用，属纯风险死代码。
+ */
 
 /* ------------------------------------------------------------------------------- */
 void startWeberver() {
@@ -501,7 +491,6 @@ void startWeberver() {
   server.on("/wifis.html", httpWiFi);
   server.on("/savewifi", httpSaveWiFi);
   server.on("/boot", httpBoot);
-  server.on("/dl", httpDownload);
 
   server.onNotFound([]() {
     server.sendHeader("Refresh", "1;url=/");
@@ -557,48 +546,9 @@ void setup() {
   Serial.println(WiFi.SSID());              // 连接的WiFI名称
 
   /* ------------------------------------------------------------------------------- */
-  // OTA
-  // ArduinoOTA.setPort(8266);    // Port defaults to 8266
-  ArduinoOTA.setHostname("aprs-tracker");    // Hostname defaults to esp8266-[ChipID]
-  // ArduinoOTA.setPassword("admin");    // No authentication by default
-  // MD5(admin) = 21232f297a57a5a743894a0e4a801fc3    // Password can be set with it's md5 value as well
-  // ArduinoOTA.setPasswordHash("21232f297a57a5a743894a0e4a801fc3");
-
-  ArduinoOTA.onStart([]() {
-    String type;
-    if (ArduinoOTA.getCommand() == U_FLASH) {
-      type = "sketch";
-    } else {  // U_FS
-      type = "filesystem";
-    }
-
-    // NOTE: if updating FS this would be the place to unmount FS using FS.end()
-    Serial.println("Start updating " + type);
-  });
-  ArduinoOTA.onEnd([]() {
-    Serial.println("\nEnd");
-  });
-  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
-    Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
-  });
-  ArduinoOTA.onError([](ota_error_t error) {
-    Serial.printf("Error[%u]: ", error);
-    if (error == OTA_AUTH_ERROR) {
-      Serial.println("Auth Failed");
-    } else if (error == OTA_BEGIN_ERROR) {
-      Serial.println("Begin Failed");
-    } else if (error == OTA_CONNECT_ERROR) {
-      Serial.println("Connect Failed");
-    } else if (error == OTA_RECEIVE_ERROR) {
-      Serial.println("Receive Failed");
-    } else if (error == OTA_END_ERROR) {
-      Serial.println("End Failed");
-    }
-  });
-  ArduinoOTA.begin();
-
-  Serial.println("3 OTA Ready!");
-  Serial.print("OTA IP address: ");
+  // v0.7: 已移除 ArduinoOTA。固件更新只能通过 USB 串口烧录。
+  Serial.println("3 Ready! (firmware update: USB serial only)");
+  Serial.print("IP address: ");
   Serial.println(WiFi.localIP());
 }
 
@@ -651,7 +601,6 @@ void traccarPOST()
 /* ------------------------------------------------------------------------------- */
 void loop() {
 
-  ArduinoOTA.handle();      // OTA handle
   server.handleClient();    // Server handle client
 
   // APRS SmartBeacon

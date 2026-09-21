@@ -11,7 +11,8 @@
 - SmartBeacon 智能信标：根据速度与转弯自动调节上报频率，省电省带宽
 - Traccar 上报（HTTP，osmand 协议，**可选**）
 - Web 配置界面（LittleFS 静态页面）：APRS / Traccar / WiFi 参数均可网页填写
-- 初始 AP 配网模式 + ArduinoOTA 无线升级
+- 初始 AP 配网模式，参数网页填写后自动重启进入追踪模式
+- 固件更新走 USB 串口（v0.7 起移除 ArduinoOTA，不再开放网络侧的固件写入通道）
 
 ## 硬件清单
 - NodeMCU v2（ESP-12E，ESP8266）
@@ -65,9 +66,16 @@
 
 ## 安全提示
 - 初始 AP 密码为硬编码 `88888888`，**配置完成后请尽快修改**（见 `src/main.cpp` 中 `setup()` 的 `WiFi.softAP(...)`）。
-- 配置文件（含 Wi-Fi 密码、APRS passcode）以明文存储在 LittleFS。
-- Web 配置接口与 `/dl` 下载接口默认无认证，请勿在不可信网络长期使用。
+- 配置文件（含 Wi-Fi 密码、APRS passcode）以明文存储在 LittleFS，**暂无任何接口可远程读取**。
+- Web 配置接口默认无认证，连上同一 Wi-Fi 即可读写配置，请勿在不可信网络长期使用。
 - 位置数据通过明文通道传输（APRS-IS 14580 本就明文；Traccar 默认 HTTP）。
+
+### 已修复的安全问题
+| 版本 | 问题 | 处理 |
+|------|------|------|
+| v0.7 | ArduinoOTA 无密码，同网段可任意刷入固件 | 移除 ArduinoOTA，固件改为 USB 串口本地烧录 |
+| v0.7 | `/dl` 接口用 `server.arg(0)` 直接 `LittleFS.open`，可下载 `/wifis.txt`、`/aprs.txt` 等明文凭据文件 | 删除该路由与 `httpDownload()`（前端从未引用） |
+| v0.6 | `positionReportWithAltitude()` 缓冲区仅 64 字节，拼接无长度校验 | 扩至 160 字节 |
 
 ## 许可
 本项目采用 [MIT License](./LICENSE)。
