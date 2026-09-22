@@ -1,9 +1,9 @@
 # ESP_GPS_Tracker
 
-基于 **ESP8266 (NodeMCU v2) + GPS 模块** 的业余无线电 APRS 追踪器，同时把位置上报到 **APRS-IS** 和 **Traccar**，内置 **SmartBeacon 智能信标算法**、**Web 配置界面**与 **OTA 升级**。
+基于 **ESP8266 (NodeMCU v2) + GPS 模块** 的业余无线电 APRS 追踪器，同时把位置上报到 **APRS-IS** 和 **Traccar**，内置 **SmartBeacon 智能信标算法**与 **Web 配置界面**。
 
 > 作者：Charles Cui（业余无线电呼号 BH9FXK）
-> 当前版本：v0.6
+> 当前版本：v0.10
 
 ## 功能特性
 - GPS 数据采集（NMEA，TinyGPSPlus 解析）
@@ -35,7 +35,8 @@
    ```
    pio run -t upload
    ```
-   默认通过 OTA 上传到 `192.168.31.143`（见 `platformio.ini` 的 `upload_port`，按需修改）。
+   默认走 USB 串口（`upload_protocol = esptool`），端口由 PlatformIO 自动探测；
+   不稳定时可显式指定 `upload_port`，或把 `upload_speed` 降到 115200。
 4. 上传文件系统（Web 配置页面与样式）：
    ```
    pio run -t uploadfs
@@ -43,15 +44,25 @@
    `platformio.ini` 中已设置 `board_build.filesystem = littlefs`。
 
 ### 配置热点（AP）的开关逻辑
-- 上电即开启热点 `aprs-tracker`（密码 `88888888`），手机连上后访问 `http://192.168.4.1/` 配置；
-- **成功连上你配置的 WiFi 后，热点会自动关闭**；
+- 上电即开启热点 `aprs-tracker`（密码见 `src/main.cpp` 顶部 `AP_PASS` 宏），手机连上后访问 `http://192.168.4.1/` 配置；
+- **成功连上你配置的 WiFi 后，热点被真正关闭**：调用 `WiFi.enableAP(false)` 从 opmode 摘掉 AP 位，
+  AP 接口、DHCP 服务器与信标一并停止 —— 不是只把 SSID 藏起来；
 - **WiFi 断开超过 30 秒，热点会自动重开**，可直接连上去重新填写 WiFi 参数；
-- 断线期间设备会每 10 秒尝试重连；
+- 断线期间设备会每 10 秒尝试重连；关闭热点后 60 秒内（`AP_OFF_COOLDOWN`）即使断线也不重开，
+  用于吸收切换 opmode 造成的短暂掉线，避免"关了又开"来回抖动；
+- **自适应退避**：关闭热点后会观察 15 秒（`AP_OFF_CHECK_WINDOW`）确认 STA 是否被带下线。
+  若连续 2 次关完就掉线，判定本板切换 opmode 会断网，此后保持热点常开，不再尝试关闭
+  （首页显示 `ON (192.168.4.1, forced)`）；
 - 热点关闭后，仍可通过设备在局域网中的 IP 访问配置页（串口日志会打印该 IP，
   首页也会显示热点当前是 `ON` 还是 `OFF`）。
 
+> **为什么关闭要动 opmode？** ESP8266 的 `WiFi.softAPdisconnect(false)` 在 core 里只是把
+> `softap_config.ssid` 置空，等同于隐藏 SSID，AP 仍在运行；而 SDK 头文件没有导出
+> `wifi_softap_stop()`，不存在"只停 AP、不动 STA"的接口。因此真正关闭只能走
+> `WIFI_AP_STA → WIFI_STA`，代价是切换瞬间 STA 可能掉线数秒后自动重连。
+
 若热点已关闭且你想重新进入配置模式，可直接断开设备所在的 WiFi（或按一下复位），
-30 秒后热点会重新出现（见下方安全提示）。
+30 秒后热点会重新出现。
 
 ## Web 配置流程
 1. 手机/电脑连接 `aprs-tracker` 热点。
@@ -77,7 +88,8 @@
 | Turn Minimum Rate | 转弯上报的最小间隔（秒） | 5 s |
 
 ## 安全提示
-- 初始 AP 密码为硬编码 `88888888`，**配置完成后请尽快修改**（见 `src/main.cpp` 中 `setup()` 的 `WiFi.softAP(...)`）。
+- AP 密码硬编码在 `src/main.cpp` 顶部 `AP_PASS` 宏，**请按需修改**；热点在连上 WiFi 后会真正关闭，
+  仅在断线超时后重开，暴露窗口有限。
 - 配置文件（含 Wi-Fi 密码、APRS passcode）以明文存储在 LittleFS，**暂无任何接口可远程读取**。
 - Web 配置接口默认无认证，连上同一 Wi-Fi 即可读写配置，请勿在不可信网络长期使用。
 - 位置数据通过明文通道传输（APRS-IS 14580 本就明文；Traccar 默认 HTTP）。
@@ -88,6 +100,7 @@
 | v0.7 | ArduinoOTA 无密码，同网段可任意刷入固件 | 移除 ArduinoOTA，固件改为 USB 串口本地烧录 |
 | v0.7 | `/dl` 接口用 `server.arg(0)` 直接 `LittleFS.open`，可下载 `/wifis.txt`、`/aprs.txt` 等明文凭据文件 | 删除该路由与 `httpDownload()`（前端从未引用） |
 | v0.6 | `positionReportWithAltitude()` 缓冲区仅 64 字节，拼接无长度校验 | 扩至 160 字节 |
+| v0.10 | AP 关闭实际只置空了 SSID（等于隐藏热点），AP 接口、DHCP 与射频仍在运行，并未真正关闭 | 改用 `WiFi.enableAP(false)` 从 opmode 摘掉 AP 位，真正关闭 AP 接口 |
 
 ## 许可
 本项目采用 [MIT License](./LICENSE)。

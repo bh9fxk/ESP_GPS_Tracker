@@ -13,6 +13,10 @@
                     保存时关键字段被清空也回落默认值，避免缺参数失效
   v0.9  2026-09-22  AP 热点自动管理：连上 WiFi 后自动关闭，断开超 30s 自动重开；
                     断线期间限频自动重连；首页显示热点状态
+  v0.10 2026-09-22  修正 AP 关闭方式：v0.9 的 softAPdisconnect(false) 在 ESP8266 core
+                    里只把 softap_config.ssid 置空（等于隐藏热点），AP 接口、DHCP
+                    与射频仍在运行。改用 WiFi.enableAP(false) 从 opmode 摘掉 AP 位
+                    真正关闭；并加 AP_OFF_COOLDOWN 冷却，避免切 opmode 抖动
 */
 
 #include <Arduino.h>
@@ -62,13 +66,16 @@
 /* ------------------------------------------------------------------------------- */
 #define TOCALL "APEST1"
 
-// AP（配置热点）：上电开启供首次配置；连上 WiFi 后自动关闭；
+// AP（配置热点）：上电开启供首次配置；连上 WiFi 后真正关闭 AP 接口；
 // WiFi 断开超过 AP_REOPEN_DELAY 则自动重开，便于现场重新配置。
 #define AP_SSID            "aprs-tracker"
 #define AP_PASS            "88888888"
 #define AP_REOPEN_DELAY    30000UL    // STA 断开多久后重开 AP（ms）
+#define AP_OFF_COOLDOWN    60000UL    // 关闭 AP 后至少保持关闭这么久，给 STA 重连留时间（ms）
+#define AP_OFF_CHECK_WINDOW 15000UL   // 关 AP 后观察 STA 是否掉线的窗口（ms）
+#define AP_OFF_MAX_FAIL    2          // 关 AP 导致掉线累计多少次后放弃关闭
 #define WIFI_RETRY_PERIOD  10000UL    // 断线时重连尝试间隔（ms）
-char ver[] = "v0.9";
+char ver[] = "v0.10";
 
 // Use Serial port on IO12/IO13 for GPS
 //static const int RXPin = PIN_D6, TXPin = PIN_D7;
@@ -154,6 +161,13 @@ File file;
 bool apEnabled = false;                  // 配置热点当前是否开启
 unsigned long lastWifiOkMillis = 0;      // 最近一次 WiFi 正常的时刻
 unsigned long lastWifiRetryMillis = 0;   // 最近一次重连尝试时刻
+unsigned long lastApOffMillis = 0;       // 最近一次关闭 AP 的时刻（v0.10）
+// 关 AP 的自适应退避（v0.10）：切 opmode 有把 STA 踢下线的风险，
+// 若连续 AP_OFF_MAX_FAIL 次关完就掉线，则判定关闭不安全，之后保持热点常开。
+bool apOffSafe = true;                   // 关 AP 是否已知不会导致 STA 掉线
+bool apOffChecking = false;              // 是否处于"关 AP 后观察期"
+unsigned long apOffCheckAt = 0;          // 观察期结束时刻
+uint8_t apOffFailCount = 0;              // 关 AP 后随即掉线的累计次数
 
 // -------------------------------------------------------------------------------
 // APRS position with without timestamp (no APRS messaging)
@@ -354,7 +368,9 @@ void httpRoot() {
 
   html.replace("###CURRSSID###", WiFi.SSID());
   html.replace("###CURRIP###", WiFi.localIP().toString());
-  html.replace("###APSTATUS###", apEnabled ? String("ON (192.168.4.1)") : String("OFF"));
+  html.replace("###APSTATUS###", apEnabled ? (apOffSafe ? String("ON (192.168.4.1)")
+                                                                   : String("ON (192.168.4.1, forced)"))
+                                             : String("OFF"));
 
   server.send(200, "text/html; charset=UTF-8", html);
 }
@@ -562,9 +578,16 @@ void startWeberver() {
 /* ------------------------------------------------------------------------------- */
 // AP（配置热点）管理
 //   · 上电开启，供首次配置；
-//   · 成功连上 WiFi 后自动关闭，减少暴露面，不必一直占着一个热点；
+//   · 成功连上 WiFi 后真正关闭 AP 接口，减少暴露面，不必一直占着一个热点；
 //   · WiFi 断开超过 AP_REOPEN_DELAY 自动重开，保证还能连上去改配置；
-//   · 关闭只调 softAPdisconnect(false)，不切 WiFi 模式，避免 STA 掉线。
+//
+//   v0.10 修正：v0.9 用的 WiFi.softAPdisconnect(false) 在 ESP8266 core 中只是把
+//   softap_config.ssid 置 0（见 ESP8266WiFiAP.cpp），AP 接口、DHCP 服务器与射频
+//   都还在跑 —— 那只是"隐藏 SSID"，并不是关闭。SDK 头文件未导出 wifi_softap_stop()，
+//   没有"只停 AP、不动 STA"的接口，所以真正关闭只能改 opmode：
+//   WIFI_AP_STA -> WIFI_STA，即 WiFi.enableAP(false)。
+//   代价是切换 opmode 会让 WiFi 子系统重启、STA 可能短暂掉线；SDK 会自动重连，
+//   manageWifi() 每 WIFI_RETRY_PERIOD 也会补一次，AP_OFF_COOLDOWN 用于吸收这段抖动。
 /* ------------------------------------------------------------------------------- */
 static void apOn() {
   if (apEnabled) {
@@ -582,25 +605,51 @@ static void apOn() {
 }
 
 static void apOff() {
-  if (!apEnabled) {
-    return;
+  if (!apEnabled || !apOffSafe) {
+    return;                        // 已判定关 AP 不安全时，热点保持常开
   }
-  WiFi.softAPdisconnect(false);    // 仅关 AP，保持 AP_STA 模式，STA 连接不受影响
+  WiFi.enableAP(false);            // 从 opmode 摘掉 AP 位：真正关闭 AP 接口
   apEnabled = false;
-  Serial.println("AP OFF (WiFi connected)");
+  lastApOffMillis = millis();
+  // 关 AP 需切 opmode，可能把 STA 踢下线；这次掉线是自己造成的，
+  // 重置计时以免立刻触发"断线超时重开"，给它完整的重连窗口
+  lastWifiOkMillis = millis();
+  apOffChecking = true;            // 进入观察期，核对 STA 是否被带下线
+  apOffCheckAt = millis() + AP_OFF_CHECK_WINDOW;
+  Serial.println("AP OFF (AP interface disabled)");
 }
 
 static void manageWifi() {
   unsigned long now = millis();
 
+  // 关 AP 观察期结束：窗口内 STA 仍在线 => 关闭安全；否则累计失败次数，
+  // 达到 AP_OFF_MAX_FAIL 后放弃关闭，避免"关了就掉、掉了又连"反复闪断。
+  if (apOffChecking && (long)(now - apOffCheckAt) >= 0) {
+    apOffChecking = false;
+    if (WiFi.status() == WL_CONNECTED) {
+      apOffFailCount = 0;
+    } else {
+      apOffFailCount++;
+      Serial.print("AP OFF dropped STA (fail #");
+      Serial.print(apOffFailCount);
+      Serial.println(")");
+      if (apOffFailCount >= AP_OFF_MAX_FAIL) {
+        apOffSafe = false;
+        Serial.println("AP OFF is unsafe on this board; config AP stays on.");
+      }
+    }
+  }
+
   if (WiFi.status() == WL_CONNECTED) {
     lastWifiOkMillis = now;
-    apOff();                       // 已连上 WiFi，收起配置热点
+    apOff();                       // 已连上 WiFi，关闭配置热点
     return;
   }
 
-  // WiFi 断开：持续断开一段时间后重开 AP
-  if (now - lastWifiOkMillis > AP_REOPEN_DELAY) {
+  // WiFi 断开：需同时满足"断开超过 AP_REOPEN_DELAY"且"不在关 AP 冷却期"才重开。
+  // 冷却期用来吸收切换 opmode 造成的短暂掉线，避免"关了又开"来回抖动。
+  bool apOffCooldown = (lastApOffMillis != 0) && (now - lastApOffMillis < AP_OFF_COOLDOWN);
+  if ((now - lastWifiOkMillis > AP_REOPEN_DELAY) && !apOffCooldown) {
     apOn();
   }
 
