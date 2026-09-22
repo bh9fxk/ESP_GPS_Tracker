@@ -11,6 +11,8 @@
                     arg(0) 读取任意 LittleFS 文件含明文凭据）
   v0.8  2026-09-22  APRS 配置页增加默认值：字段为空时预填推荐值，
                     保存时关键字段被清空也回落默认值，避免缺参数失效
+  v0.9  2026-09-22  AP 热点自动管理：连上 WiFi 后自动关闭，断开超 30s 自动重开；
+                    断线期间限频自动重连；首页显示热点状态
 */
 
 #include <Arduino.h>
@@ -59,7 +61,14 @@
 
 /* ------------------------------------------------------------------------------- */
 #define TOCALL "APEST1"
-char ver[] = "v0.8";
+
+// AP（配置热点）：上电开启供首次配置；连上 WiFi 后自动关闭；
+// WiFi 断开超过 AP_REOPEN_DELAY 则自动重开，便于现场重新配置。
+#define AP_SSID            "aprs-tracker"
+#define AP_PASS            "88888888"
+#define AP_REOPEN_DELAY    30000UL    // STA 断开多久后重开 AP（ms）
+#define WIFI_RETRY_PERIOD  10000UL    // 断线时重连尝试间隔（ms）
+char ver[] = "v0.9";
 
 // Use Serial port on IO12/IO13 for GPS
 //static const int RXPin = PIN_D6, TXPin = PIN_D7;
@@ -140,6 +149,11 @@ WiFiClient wificlient;
 HTTPClient httpclient;
 ESP8266WebServer server(80);
 File file;
+
+// AP / WiFi 状态（v0.9）
+bool apEnabled = false;                  // 配置热点当前是否开启
+unsigned long lastWifiOkMillis = 0;      // 最近一次 WiFi 正常的时刻
+unsigned long lastWifiRetryMillis = 0;   // 最近一次重连尝试时刻
 
 // -------------------------------------------------------------------------------
 // APRS position with without timestamp (no APRS messaging)
@@ -340,6 +354,7 @@ void httpRoot() {
 
   html.replace("###CURRSSID###", WiFi.SSID());
   html.replace("###CURRIP###", WiFi.localIP().toString());
+  html.replace("###APSTATUS###", apEnabled ? String("ON (192.168.4.1)") : String("OFF"));
 
   server.send(200, "text/html; charset=UTF-8", html);
 }
@@ -545,6 +560,59 @@ void startWeberver() {
 }
 
 /* ------------------------------------------------------------------------------- */
+// AP（配置热点）管理
+//   · 上电开启，供首次配置；
+//   · 成功连上 WiFi 后自动关闭，减少暴露面，不必一直占着一个热点；
+//   · WiFi 断开超过 AP_REOPEN_DELAY 自动重开，保证还能连上去改配置；
+//   · 关闭只调 softAPdisconnect(false)，不切 WiFi 模式，避免 STA 掉线。
+/* ------------------------------------------------------------------------------- */
+static void apOn() {
+  if (apEnabled) {
+    return;
+  }
+  if (WiFi.softAP(AP_SSID, AP_PASS)) {
+    apEnabled = true;
+    Serial.print("AP ON  (SSID: ");
+    Serial.print(AP_SSID);
+    Serial.print(")  IP: ");
+    Serial.println(WiFi.softAPIP());
+  } else {
+    Serial.println("AP ON failed!");
+  }
+}
+
+static void apOff() {
+  if (!apEnabled) {
+    return;
+  }
+  WiFi.softAPdisconnect(false);    // 仅关 AP，保持 AP_STA 模式，STA 连接不受影响
+  apEnabled = false;
+  Serial.println("AP OFF (WiFi connected)");
+}
+
+static void manageWifi() {
+  unsigned long now = millis();
+
+  if (WiFi.status() == WL_CONNECTED) {
+    lastWifiOkMillis = now;
+    apOff();                       // 已连上 WiFi，收起配置热点
+    return;
+  }
+
+  // WiFi 断开：持续断开一段时间后重开 AP
+  if (now - lastWifiOkMillis > AP_REOPEN_DELAY) {
+    apOn();
+  }
+
+  // 限频尝试重连（WiFiMulti.run() 是阻塞调用，不宜每轮 loop 都调）
+  if (now - lastWifiRetryMillis > WIFI_RETRY_PERIOD) {
+    lastWifiRetryMillis = now;
+    Serial.println("WiFi lost, retrying...");
+    WiFiMulti.run();
+  }
+}
+
+/* ------------------------------------------------------------------------------- */
 void setup() {
   pinMode(PIN_D4, OUTPUT);
 
@@ -552,17 +620,12 @@ void setup() {
   gpsSerial.begin(GPSBaud);
   Serial.println(F("0 ESP SmartBeacon APRS-IS Tracker."));
   
-  // Start AP
+  // Start AP（首次配置用；连上 WiFi 后自动关闭，断线超时自动重开，见 manageWifi()）
   WiFi.mode(WIFI_AP_STA);
-
+  WiFi.setHostname("aprs-tracker");
   Serial.println("");
   Serial.println("Start AP...");
-
-  WiFi.setHostname("aprs-tracker");
-  WiFi.softAP("aprs-tracker", "88888888");
-  
-  Serial.print("AP IP address: ");
-  Serial.println(WiFi.softAPIP());
+  apOn();
   
   // Web Configuration
   if (!LittleFS.begin()) {
@@ -588,6 +651,7 @@ void setup() {
   Serial.println("");
   Serial.print("2 Connected to WiFi: ");    // NodeMCU将通过串口监视器输出。
   Serial.println(WiFi.SSID());              // 连接的WiFI名称
+  lastWifiOkMillis = millis();              // v0.9: 记录连接时刻
 
   /* ------------------------------------------------------------------------------- */
   // v0.7: 已移除 ArduinoOTA。固件更新只能通过 USB 串口烧录。
@@ -645,6 +709,7 @@ void traccarPOST()
 /* ------------------------------------------------------------------------------- */
 void loop() {
 
+  manageWifi();             // v0.9: AP 开关 + 断线重连管理
   server.handleClient();    // Server handle client
 
   // APRS SmartBeacon
