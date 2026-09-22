@@ -86,6 +86,20 @@ td {
    width: 50%;
 }
 
+/* 字段下方的灰色提示文字 */
+.hint {
+   display: block;
+   color: #666;
+   font-size: 13px;
+   line-height: 17px;
+   margin-top: 2px;
+}
+
+input[type=text]::placeholder {
+   color: #999;
+   font-size: 18px;
+}
+
 .wifiinfo {
    width: 80%;
    margin: 0 10% 10% 10%;

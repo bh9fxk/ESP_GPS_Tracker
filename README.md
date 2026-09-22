@@ -49,6 +49,9 @@
 2. 浏览器打开 `http://192.168.4.1/`。
 3. 依次配置：
    - **APRS config（必填）**：呼号（如 `BH9FXK-5`）、APRS passcode、注释、自定义信息、APRS-IS 服务器（如 `asia.aprs2.net`）、符号、SmartBeacon 参数。
+     **各字段已预填推荐默认值**（见 `src/main.cpp` 的 `DEF_*` 宏），首次配置只需改呼号与
+     passcode 即可直接保存；字段下方有灰色小字说明取值范围；
+     若把关键字段清空后保存，固件会自动回落到默认值，避免设备因缺参数而不发信标。
    - **Traccar config（选填）**：设备 ID、服务器域名、端口（默认 5055）。**留空则不启用 Traccar 上报**，设备仅向 APRS-IS 发信标。
    - **WiFi config**：填写两个 SSID/密码，设备会按序自动连接。
 4. 点击 **Exit & boot** 重启，进入正常追踪模式。

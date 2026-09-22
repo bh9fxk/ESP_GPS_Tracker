@@ -9,6 +9,8 @@
   v0.7  2026-09-21  固件更新改为串口上传：移除 ArduinoOTA（原无密码，存在
                     任意固件刷入风险）；移除无引用的 /dl 下载接口（原可用
                     arg(0) 读取任意 LittleFS 文件含明文凭据）
+  v0.8  2026-09-22  APRS 配置页增加默认值：字段为空时预填推荐值，
+                    保存时关键字段被清空也回落默认值，避免缺参数失效
 */
 
 #include <Arduino.h>
@@ -57,7 +59,7 @@
 
 /* ------------------------------------------------------------------------------- */
 #define TOCALL "APEST1"
-char ver[] = "v0.7";
+char ver[] = "v0.8";
 
 // Use Serial port on IO12/IO13 for GPS
 //static const int RXPin = PIN_D6, TXPin = PIN_D7;
@@ -82,6 +84,25 @@ char custominfo[32];            // Information
 char aprshost[255];             // APRS-IS host
 char symbol_str[8];             // APRS Symbol
 uint16_t aprsport = 14580;      // Port is fixed to TCP/14580
+
+// ---------------------------------------------------------------------------
+// APRS 参数默认值：Web 配置页在字段为空时预填以下推荐值，
+// 用户可直接采用或改成自己的；保存时若关键字段被清空，
+// 也会回落到这些值，避免因缺参数导致设备不发信标。
+// ---------------------------------------------------------------------------
+#define DEF_MYCALL     "BH9FXK-5"                          // 呼号（改成自己的）
+#define DEF_APRSPASS   ""                                  // 不预填：必须用呼号对应的 passcode
+#define DEF_COMMENT    "ESP APRS Tracker & Traccar."        // 信标注释
+#define DEF_CUSTOMINFO "不负韶华 为梦想奋斗"                          // 自定义信息
+#define DEF_APRSHOST   "asia.aprs2.net"                    // APRS-IS 服务器
+#define DEF_SYMBOL     "/X"                                // APRS 符号（/X = 直升机）
+#define DEF_LOWSPEED   "3"                                 // km/h
+#define DEF_LOWRATE    "300"                               // s
+#define DEF_HIGHSPEED  "60"                                // km/h
+#define DEF_HIGHRATE   "60"                                // s
+#define DEF_TURNMIN    "8"                                 // deg
+#define DEF_TURNSLOPE  "255"
+#define DEF_TURNTIME   "5"
 
 // APRS SmartBeacon configuration
 // int low_speed = 3;    //km/h
@@ -333,6 +354,27 @@ void httpStyle() {
 }
 
 /* ------------------------------------------------------------------------------- */
+// 参数为空则回落到默认值（用于 Web 页预填与保存兜底）
+static String valOr(const String &v, const char *def) {
+  String s = v;
+  s.trim();
+  return s.length() ? s : String(def);
+}
+static String valOr(const char *v, const char *def) {
+  return valOr(String(v), def);
+}
+
+// HTML 属性值转义：防止配置内容中的 " < > & 破坏表单渲染
+// （只用于页面显示，保存时仍存原文）
+static String valEsc(const char *v, const char *def) {
+  String s = valOr(v, def);
+  s.replace("&", "&amp;");
+  s.replace("\"", "&quot;");
+  s.replace("<", "&lt;");
+  s.replace(">", "&gt;");
+  return s;
+}
+
 void httpAPRS() {
   String html;
   String symtab;
@@ -341,19 +383,20 @@ void httpAPRS() {
   html = file.readString();
   file.close();
 
-  html.replace("###MYCALL###", String(mycall));
-  html.replace("###APRSPASS###", String(aprspass));
-  html.replace("###COMMENT###", String(comment));
-  html.replace("###CUSTOMINFO###", String(custominfo));
-  html.replace("###APRSHOST###", String(aprshost));
-  html.replace("###SYMBOL###", String(symbol_str));
-  html.replace("###LOWSPEED###", String(low_speed));
-  html.replace("###LOWRATE###", String(low_rate));
-  html.replace("###HIGHSPEED###", String(high_speed));
-  html.replace("###HIGHRATE###", String(high_rate));
-  html.replace("###TURNMIN###", String(turn_min));
-  html.replace("###TURNSLOPE###", String(turn_slope));
-  html.replace("###TURNTIME###", String(turn_time));
+  // 空字段预填默认值，首次配置无需逐项手填
+  html.replace("###MYCALL###", valEsc(mycall, DEF_MYCALL));
+  html.replace("###APRSPASS###", valEsc(aprspass, DEF_APRSPASS));
+  html.replace("###COMMENT###", valEsc(comment, DEF_COMMENT));
+  html.replace("###CUSTOMINFO###", valEsc(custominfo, DEF_CUSTOMINFO));
+  html.replace("###APRSHOST###", valEsc(aprshost, DEF_APRSHOST));
+  html.replace("###SYMBOL###", valEsc(symbol_str, DEF_SYMBOL));
+  html.replace("###LOWSPEED###", valEsc(low_speed_str, DEF_LOWSPEED));
+  html.replace("###LOWRATE###", valEsc(low_rate_str, DEF_LOWRATE));
+  html.replace("###HIGHSPEED###", valEsc(high_speed_str, DEF_HIGHSPEED));
+  html.replace("###HIGHRATE###", valEsc(high_rate_str, DEF_HIGHRATE));
+  html.replace("###TURNMIN###", valEsc(turn_min_str, DEF_TURNMIN));
+  html.replace("###TURNSLOPE###", valEsc(turn_slope_str, DEF_TURNSLOPE));
+  html.replace("###TURNTIME###", valEsc(turn_time_str, DEF_TURNTIME));
 
   server.send(200, "text/html; charset=UTF-8", html);
 }
@@ -362,19 +405,20 @@ void httpSaveAPRS() {
   String html;
 
   file = LittleFS.open("/aprs.txt", "w");
-  file.println(server.arg("mycall"));
-  file.println(server.arg("aprspass"));
-  file.println(server.arg("comment"));
-  file.println(server.arg("custominfo"));
-  file.println(server.arg("aprshost"));
-  file.println(server.arg("symbol"));
-  file.println(server.arg("low_speed"));
-  file.println(server.arg("low_rate"));
-  file.println(server.arg("high_speed"));
-  file.println(server.arg("high_rate"));
-  file.println(server.arg("turn_min"));
-  file.println(server.arg("turn_slope"));
-  file.println(server.arg("turn_time"));
+  // 关键字段被清空时回落默认值，防止保存后设备因缺参数而失效
+  file.println(valOr(server.arg("mycall"), DEF_MYCALL));
+  file.println(valOr(server.arg("aprspass"), DEF_APRSPASS));
+  file.println(valOr(server.arg("comment"), DEF_COMMENT));
+  file.println(valOr(server.arg("custominfo"), DEF_CUSTOMINFO));
+  file.println(valOr(server.arg("aprshost"), DEF_APRSHOST));
+  file.println(valOr(server.arg("symbol"), DEF_SYMBOL));
+  file.println(valOr(server.arg("low_speed"), DEF_LOWSPEED));
+  file.println(valOr(server.arg("low_rate"), DEF_LOWRATE));
+  file.println(valOr(server.arg("high_speed"), DEF_HIGHSPEED));
+  file.println(valOr(server.arg("high_rate"), DEF_HIGHRATE));
+  file.println(valOr(server.arg("turn_min"), DEF_TURNMIN));
+  file.println(valOr(server.arg("turn_slope"), DEF_TURNSLOPE));
+  file.println(valOr(server.arg("turn_time"), DEF_TURNTIME));
   file.close();
 
   // reread config from file

@@ -9,47 +9,60 @@
 <table>
 
 <tr><td>Callsign to transmit as<br />
-<input type="text" name="mycall" maxlength="10" value="###MYCALL###"></td></tr>
+<input type="text" name="mycall" maxlength="10" value="###MYCALL###" placeholder="BH9FXK-5">
+<span class="hint">呼号或呼号-SSID：-0 固定台，-5/-7/-9 移动台，如 BH9FXK-5</span></td></tr>
 
 <tr><td><br />APRS passcode<br />
-<input type="text" name="aprspass" maxlength="7" value="###APRSPASS###"></td></tr>
+<input type="text" name="aprspass" maxlength="7" value="###APRSPASS###" placeholder="必填，如 12345">
+<span class="hint">必填：用你的呼号算出的 passcode（不能随便填，错了会被服务器拒收）</span></td></tr>
 
 <tr><td><br />Comment text to send with beacon<br />
-<input type="text" name="comment" maxlength="32" value="###COMMENT###"></td></tr>
+<input type="text" name="comment" maxlength="32" value="###COMMENT###" placeholder="ESP APRS Tracker">
+<span class="hint">随信标发出的注释，最长 32 字符</span></td></tr>
 
 <tr><td><br />Information text to send with beacon<br />
-<input type="text" name="custominfo" maxlength="32" value="###CUSTOMINFO###"></td></tr>
+<input type="text" name="custominfo" maxlength="32" value="###CUSTOMINFO###" placeholder="自定义信息">
+<span class="hint">自定义信息字段，最长 32 字符</span></td></tr>
 
 <tr><td><br />APRS-IS Server Hostname<br />Port is fixed to TCP 14580<br />
-<input type="text" name="aprshost" maxlength="255" value="###APRSHOST###"></td></tr>
+<input type="text" name="aprshost" maxlength="255" value="###APRSHOST###" placeholder="asia.aprs2.net">
+<span class="hint">常用：asia.aprs2.net（亚洲）/ rotate.aprs2.net（自动轮换）</span></td></tr>
 
 <tr><td><br />APRS Symbol<br />
-<input type="text" name="symbol" maxlength="2" value="###SYMBOL###"></td></tr>
+<input type="text" name="symbol" maxlength="2" value="###SYMBOL###" placeholder="/X">
+<span class="hint">两位：第 1 位符号表 (/ 主表)，第 2 位符号码，如 /X 直升机、/&gt; 汽车</span></td></tr>
 
 <tr><td><br />APRS SmartBeacon&trade;<br /><br />Beacon is sent every Low Rate and is propotional upto High Rate.</td></tr>
 
 <tr><td><br />Low Speed (km/h)<br />
-<input type="text" name="low_speed" maxlength="4" value="###LOWSPEED###"></td></tr>
+<input type="text" name="low_speed" maxlength="4" value="###LOWSPEED###" placeholder="3">
+<span class="hint">低于此速度视为静止，按 Low Rate 发信标（推荐 3）</span></td></tr>
 
 <tr><td><br />Low Rate (sec)<br />
-<input type="text" name="low_rate" maxlength="4" value="###LOWRATE###"></td></tr>
+<input type="text" name="low_rate" maxlength="4" value="###LOWRATE###" placeholder="300">
+<span class="hint">静止时的信标间隔，秒（推荐 300 = 5 分钟）</span></td></tr>
 
 <tr><td><br />High Speed (km/h)<br />
-<input type="text" name="high_speed" maxlength="4" value="###HIGHSPEED###"></td></tr>
+<input type="text" name="high_speed" maxlength="4" value="###HIGHSPEED###" placeholder="60">
+<span class="hint">达到此速度即用 High Rate（推荐 60）</span></td></tr>
 
 <tr><td><br />High Rate (sec)<br />
-<input type="text" name="high_rate" maxlength="4" value="###HIGHRATE###"></td></tr>
+<input type="text" name="high_rate" maxlength="4" value="###HIGHRATE###" placeholder="60">
+<span class="hint">高速下的信标间隔，秒（推荐 60）</span></td></tr>
 
 <tr><td><br />Beacon is also sent if turn angle changes enough.</td></tr>
 
 <tr><td><br />Turn Minimum Angle (deg)<br />
-<input type="text" name="turn_min" maxlength="4" value="###TURNMIN###"></td></tr>
+<input type="text" name="turn_min" maxlength="4" value="###TURNMIN###" placeholder="8">
+<span class="hint">转弯超过此角度额外发一次信标（推荐 8）</span></td></tr>
 
 <tr><td><br />Turn Slope<br />
-<input type="text" name="turn_slope" maxlength="4" value="###TURNSLOPE###"></td></tr>
+<input type="text" name="turn_slope" maxlength="4" value="###TURNSLOPE###" placeholder="255">
+<span class="hint">转弯灵敏度，值越大越迟钝（推荐 255）</span></td></tr>
 
 <tr><td><br />Turn Minimum Rate (sec)<br />
-<input type="text" name="turn_time" maxlength="4" value="###TURNTIME###"></td></tr>
+<input type="text" name="turn_time" maxlength="4" value="###TURNTIME###" placeholder="5">
+<span class="hint">两次转弯信标的最小间隔，秒（推荐 5）</span></td></tr>
 
 <tr><td></td></tr>
 
@@ -62,4 +75,3 @@
 </form>
 </body>
 </html>
-
