@@ -17,11 +17,16 @@
                     里只把 softap_config.ssid 置空（等于隐藏热点），AP 接口、DHCP
                     与射频仍在运行。改用 WiFi.enableAP(false) 从 opmode 摘掉 AP 位
                     真正关闭；并加 AP_OFF_COOLDOWN 冷却，避免切 opmode 抖动
+  v0.11 2026-09-23  修复 Web 配置页响应极慢：setup() 死等 WiFi 改为限时等待；
+                    loop() 用 WiFi.status() 取代阻塞的 WiFiMulti.run()；
+                    smartDelay() 等待期间继续响应 HTTP；结尾 delay 改为 smartDelay(LOOP_DELAY)；
+                    LED 闪烁改非阻塞；新增 DNSServer 强制门户
 */
 
 #include <Arduino.h>
 
 // GPS
+#include <DNSServer.h>
 #include <SoftwareSerial.h>
 #include <TinyGPSPlus.h>
 
@@ -75,7 +80,12 @@
 #define AP_OFF_CHECK_WINDOW 15000UL   // 关 AP 后观察 STA 是否掉线的窗口（ms）
 #define AP_OFF_MAX_FAIL    2          // 关 AP 导致掉线累计多少次后放弃关闭
 #define WIFI_RETRY_PERIOD  10000UL    // 断线时重连尝试间隔（ms）
-char ver[] = "v0.10";
+#define WIFI_RETRY_PERIOD_CFG 30000UL // 配置热点开着时的重连间隔（ms），配网中不必急着连
+#define WIFI_CONNECT_TRY_MS 2000      // WiFiMulti.run() 单个 AP 的连接超时（ms，默认 5000）
+#define WIFI_CONNECT_TIMEOUT 20000UL  // setup() 里等 WiFi 的上限（ms），超时先进配置模式
+#define LOOP_DELAY           200      // loop() 每轮末尾等待（ms），期间仍喂 GPS 并响应 Web
+#define DNS_PORT            53        // 强制门户 DNS 端口
+char ver[] = "v0.11";
 
 // Use Serial port on IO12/IO13 for GPS
 //static const int RXPin = PIN_D6, TXPin = PIN_D7;
@@ -155,6 +165,7 @@ ESP8266WiFiMulti WiFiMulti;
 WiFiClient wificlient;
 HTTPClient httpclient;
 ESP8266WebServer server(80);
+DNSServer dnsServer;                     // v0.11: 强制门户，任意域名解析到 AP 地址
 File file;
 
 // AP / WiFi 状态（v0.9）
@@ -348,6 +359,7 @@ static void readCfgWiFi()
 
 /* ------------------------------------------------------------------------------- */
 // This custom version of delay() ensures that the gps object is being "fed".
+// 等待期间继续喂 GPS，同时响应 Web 请求 —— 否则页面会卡住整整 ms 毫秒。
 static void smartDelay(unsigned long ms)
 {
   unsigned long start = millis();
@@ -355,6 +367,8 @@ static void smartDelay(unsigned long ms)
   {
     while (gpsSerial.available())
       gps.encode(gpsSerial.read());
+    server.handleClient();    // v0.11: 等待中继续处理 HTTP，配置页不会被拖住
+    yield();
   } while (millis() - start < ms);
 }
 
@@ -595,6 +609,7 @@ static void apOn() {
   }
   if (WiFi.softAP(AP_SSID, AP_PASS)) {
     apEnabled = true;
+    dnsServer.start(DNS_PORT, "*", WiFi.softAPIP());   // v0.11: 任意域名解析到本机
     Serial.print("AP ON  (SSID: ");
     Serial.print(AP_SSID);
     Serial.print(")  IP: ");
@@ -608,6 +623,7 @@ static void apOff() {
   if (!apEnabled || !apOffSafe) {
     return;                        // 已判定关 AP 不安全时，热点保持常开
   }
+  dnsServer.stop();                // v0.11: 关 AP 前先停强制门户 DNS
   WiFi.enableAP(false);            // 从 opmode 摘掉 AP 位：真正关闭 AP 接口
   apEnabled = false;
   lastApOffMillis = millis();
@@ -654,10 +670,14 @@ static void manageWifi() {
   }
 
   // 限频尝试重连（WiFiMulti.run() 是阻塞调用，不宜每轮 loop 都调）
-  if (now - lastWifiRetryMillis > WIFI_RETRY_PERIOD) {
+  // v0.11: 单次连接超时压到 WIFI_CONNECT_TRY_MS（默认 5000ms/AP，两个 AP 就是 10s），
+  // 一次最多卡 WIFI_CONNECT_TRY_MS × 已配置的 AP 数；配置热点开着时说明用户正在配网，
+  // 没必要急着连，间隔放宽到 WIFI_RETRY_PERIOD_CFG，进一步减少阻塞。
+  unsigned long retryPeriod = apEnabled ? WIFI_RETRY_PERIOD_CFG : WIFI_RETRY_PERIOD;
+  if (now - lastWifiRetryMillis > retryPeriod) {
     lastWifiRetryMillis = now;
     Serial.println("WiFi lost, retrying...");
-    WiFiMulti.run();
+    WiFiMulti.run(WIFI_CONNECT_TRY_MS);
   }
 }
 
@@ -691,22 +711,36 @@ void setup() {
   WiFiMulti.addAP(ssid2, pass2);
   
   // Wait for connection
+  // v0.11: 原来是死等 WiFi，连不上就永远进不了 loop()，Web 只能靠这个循环里的
+  // handleClient 服务，而每次循环都要跑一次阻塞的 WiFiMulti.run()（未连接时每个
+  // AP 最多等 5s），页面要十几秒才响应一次。改为限时等待，超时先进入 loop()，
+  // 后续重连交给 manageWifi() 限频处理，AP 配置热点保持可用。
   Serial.print("1 Wait for WiFi... ");
-  while(WiFiMulti.run() != WL_CONNECTED) {
+  unsigned long wifiWaitStart = millis();
+  while (WiFiMulti.run(WIFI_CONNECT_TRY_MS) != WL_CONNECTED) {
     server.handleClient();    // Server handle client
     Serial.print(".");
     delay(500);
+    if (millis() - wifiWaitStart > WIFI_CONNECT_TIMEOUT) {
+      Serial.println("\nWiFi not connected, keeping config AP on.");
+      break;
+    }
   }
-  Serial.println("");
-  Serial.print("2 Connected to WiFi: ");    // NodeMCU将通过串口监视器输出。
-  Serial.println(WiFi.SSID());              // 连接的WiFI名称
-  lastWifiOkMillis = millis();              // v0.9: 记录连接时刻
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("");
+    Serial.print("2 Connected to WiFi: ");    // NodeMCU将通过串口监视器输出。
+    Serial.println(WiFi.SSID());              // 连接的WiFI名称
+    lastWifiOkMillis = millis();              // v0.9: 记录连接时刻
+  } else {
+    Serial.println("");
+    Serial.println("2 Not connected yet; AP stays on, will retry in loop().");
+  }
 
   /* ------------------------------------------------------------------------------- */
   // v0.7: 已移除 ArduinoOTA。固件更新只能通过 USB 串口烧录。
   Serial.println("3 Ready! (firmware update: USB serial only)");
   Serial.print("IP address: ");
-  Serial.println(WiFi.localIP());
+  Serial.println(WiFi.localIP());    // 未连上时显示 0.0.0.0
 }
 
 /* ------------------------------------------------------------------------------- */
@@ -738,15 +772,13 @@ void traccarPOST()
     Serial.println("OK: DATA SENT TO THE TRACCAR SERVER.");
     Serial.println(apiTraccar);
     post_now = false;
-    // 上传成功闪灯5次
-    int i = 0;
-    while (i < 5)
+    // 上传成功闪灯5次（v0.11: 用 smartDelay，闪灯期间继续响应 Web）
+    for (int i = 0; i < 5; i++)
     {
       digitalWrite(LED_BUILTIN, LOW);
-      delay(150);
+      smartDelay(150);
       digitalWrite(LED_BUILTIN, HIGH);
-      delay(150);
-      i++;
+      smartDelay(150);
     }
 
     } else {
@@ -760,6 +792,9 @@ void loop() {
 
   manageWifi();             // v0.9: AP 开关 + 断线重连管理
   server.handleClient();    // Server handle client
+  if (apEnabled) {
+    dnsServer.processNextRequest();    // v0.11: 强制门户 DNS（手机连上即可自动弹配置页）
+  }
 
   // APRS SmartBeacon
   int cur_speed, cur_heading, turn_threshold, heading_change_since_beacon = 0;
@@ -767,7 +802,10 @@ void loop() {
   unsigned long currentMillis = millis(), secs_since_beacon = (currentMillis - lastBeaconMillis) / 1000;
  
   // Connect to wifi, decode GPS and send APRS & TRACCAR packets.
-  if (WiFiMulti.run() == WL_CONNECTED) {    // When connected to WiFi
+  // v0.11: 这里不要用 WiFiMulti.run() —— 它是阻塞调用（未连接时每个 AP 最多等 5s），
+  // 会卡住整个 loop 让配置页长时间无响应。重连已由 manageWifi() 限频负责，
+  // 这里只需非阻塞地判断"当前是否已连上"。
+  if (WiFi.status() == WL_CONNECTED) {    // When connected to WiFi
     Serial.println(F("4 Wifi is OK."));
     digitalWrite(PIN_D4, HIGH);      // led off 当无线网络已连接
     smartDelay(1000);                // initial feeding of the GPS to make sure we have data
@@ -776,7 +814,7 @@ void loop() {
     if (strlen(aprshost) == 0)
     {
       Serial.println(F("APRS 参数未配置，等待 Web 配置."));
-      delay(1000);
+      smartDelay(1000);            // v0.11: 等待期间继续响应配置页面
       return;
     }
     
@@ -861,14 +899,12 @@ void loop() {
             prev_heading = cur_heading;
             
             // 上传成功闪灯5次
-            int i = 0;
-            while (i < 5)
+            for (int i = 0; i < 5; i++)
             {
               digitalWrite(LED_BUILTIN, LOW);
-              delay(150);
+              smartDelay(150);          // v0.11: 闪灯期间也响应 Web
               digitalWrite(LED_BUILTIN, HIGH);
-              delay(150);
-              i++;
+              smartDelay(150);
             }
           } else {
             Serial.printf("Failed to connect to %s:%u as %s %s\n", aprshost, aprsport, mycall, aprspass);
@@ -887,9 +923,10 @@ void loop() {
       Serial.println(F("ERROR: No GPS detected: check wiring. Restarting..."));
       ESP.restart();    // 明确重启，避免不可控看门狗复位
     }
-    delay(1000);
   } else {
     digitalWrite(PIN_D4, LOW);    // 无网络，闪灯 interval led on as a heartbeat  
   }
-  delay(1000);
+  // v0.11: 原来这里是 delay(1000)，期间完全不响应 HTTP；改成 smartDelay，
+  // 同样喂 GPS 但会持续处理 Web 请求。
+  smartDelay(LOOP_DELAY);
 }

@@ -3,7 +3,7 @@
 基于 **ESP8266 (NodeMCU v2) + GPS 模块** 的业余无线电 APRS 追踪器，同时把位置上报到 **APRS-IS** 和 **Traccar**，内置 **SmartBeacon 智能信标算法**与 **Web 配置界面**。
 
 > 作者：Charles Cui（业余无线电呼号 BH9FXK）
-> 当前版本：v0.10
+> 当前版本：v0.11
 
 ## 功能特性
 - GPS 数据采集（NMEA，TinyGPSPlus 解析）
@@ -44,11 +44,13 @@
    `platformio.ini` 中已设置 `board_build.filesystem = littlefs`。
 
 ### 配置热点（AP）的开关逻辑
-- 上电即开启热点 `aprs-tracker`（密码见 `src/main.cpp` 顶部 `AP_PASS` 宏），手机连上后访问 `http://192.168.4.1/` 配置；
+- 上电即开启热点 `aprs-tracker`（密码见 `src/main.cpp` 顶部 `AP_PASS` 宏）；v0.11 起内置强制门户
+  DNS，手机连上后通常会自动弹出配置页，也可手动访问 `http://192.168.4.1/`；
 - **成功连上你配置的 WiFi 后，热点被真正关闭**：调用 `WiFi.enableAP(false)` 从 opmode 摘掉 AP 位，
   AP 接口、DHCP 服务器与信标一并停止 —— 不是只把 SSID 藏起来；
 - **WiFi 断开超过 30 秒，热点会自动重开**，可直接连上去重新填写 WiFi 参数；
-- 断线期间设备会每 10 秒尝试重连；关闭热点后 60 秒内（`AP_OFF_COOLDOWN`）即使断线也不重开，
+- 断线期间设备会定期尝试重连（`WIFI_RETRY_PERIOD` 10 秒；配置热点开着时放宽到 30 秒）；
+  关闭热点后 60 秒内（`AP_OFF_COOLDOWN`）即使断线也不重开，
   用于吸收切换 opmode 造成的短暂掉线，避免"关了又开"来回抖动；
 - **自适应退避**：关闭热点后会观察 15 秒（`AP_OFF_CHECK_WINDOW`）确认 STA 是否被带下线。
   若连续 2 次关完就掉线，判定本板切换 opmode 会断网，此后保持热点常开，不再尝试关闭
@@ -63,6 +65,25 @@
 
 若热点已关闭且你想重新进入配置模式，可直接断开设备所在的 WiFi（或按一下复位），
 30 秒后热点会重新出现。
+
+### 配置页响应速度（v0.11 优化）
+ESP8266 单核单线程，`server.handleClient()` 每次 `loop()` 只跑一次，**任何阻塞都会
+直接变成页面卡顿**。v0.11 之前打开配置页经常要等十几秒，原因与处理：
+
+| 位置 | v0.11 之前 | 现在 |
+|---|---|---|
+| `setup()` 等 WiFi | `while(WiFiMulti.run() != WL_CONNECTED)` 死等，连不上就永远进不了 `loop()` | 限时 20 秒（`WIFI_CONNECT_TIMEOUT`），超时先进入配置模式 |
+| `loop()` 判断联网 | 每轮调阻塞的 `WiFiMulti.run()`，未连接时每次最多 10 秒 | 改用非阻塞的 `WiFi.status()`，重连交给 `manageWifi()` 限频 |
+| 重连单次超时 | 每 AP 5 秒 × 2 = 最多 10 秒 | 压到 `WIFI_CONNECT_TRY_MS`（2 秒） |
+| 各处 `delay()` | 纯阻塞，等待期间完全不响应 HTTP | 统一改 `smartDelay()`，等待中继续喂 GPS 并处理 Web 请求 |
+| 闪灯 `delay(150)`×10 | 阻塞 1.5 秒 | 改 `smartDelay()` |
+
+同时新增 `DNSServer` 强制门户：手机连热点后自动弹出配置页，也避免手机做连通性探测
+时因无 DNS 而长时间等待。
+
+> **仍存在的瓶颈**：GPS 用的是 `SoftwareSerial`（D6/D7，9600bps）。软件串口靠 CPU 逐位
+> 采样，会持续占用资源、影响 WiFi 响应。想进一步提速可把 GPS 改接硬件串口，
+> 或把波特率从 9600 提到 38400/115200（需同步改 `GPSBaud` 与 GPS 模块配置）。
 
 ## Web 配置流程
 1. 手机/电脑连接 `aprs-tracker` 热点。
